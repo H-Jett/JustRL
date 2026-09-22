@@ -11,7 +11,18 @@ from vllm import LLM, SamplingParams
 # --------------------------------------------------------------------------- #
 #                   Global constants / variables                              #
 # --------------------------------------------------------------------------- #
-DATA_DIR = "data"
+def require_env(key: str) -> str:
+    """读取必填环境变量。这里刻意不设任何默认值 —— 全部配置由 evals/run.sh 提供,
+    避免"代码里的默认值"和"实际机器/模型"不一致导致结果不可比。"""
+    value = os.environ.get(key)
+    if not value:
+        raise RuntimeError(
+            f"缺少必填环境变量 {key}; 请通过 evals/run.sh 运行, 或手动 export {key}=..."
+        )
+    return value
+
+
+DATA_DIR = require_env("EVAL_DATA_DIR")
 TASKS       = [
     {"name": "AIME24", "path": f"{DATA_DIR}/AIME24/test.parquet", "N": 32},
     {"name": "AIME25", "path": f"{DATA_DIR}/AIME25/test.parquet", "N": 32},
@@ -24,11 +35,11 @@ TASKS       = [
     {"name": "HMMT25", "path": f"{DATA_DIR}/HMMT25/test.parquet", "N": 32},
 ]
 PROMPT_TEMPLATE = """{problem} Please reason step by step, and put your final answer within \\boxed{{}}."""
-NAME        = "hbx/JustRL-DeepSeek-1.5B" # "hbx/JustRL-Nemotron-1.5B"
+MODEL       = require_env("EVAL_MODEL")
 MAX_TOKENS  = 31744
 TEMPERATURE = 0.7
 TOP_P       = 0.9
-OUT_DIR     = Path(f"justrl_eval_outputs/{NAME.split('/')[-1]}")
+OUT_DIR     = Path(require_env("EVAL_OUT_DIR"))
 OUT_DIR.mkdir(parents=True, exist_ok=True)
 
 # --------------------------------------------------------------------------- #
@@ -80,7 +91,7 @@ def worker_process(args_tuple):
     os.environ["CUDA_VISIBLE_DEVICES"] = str(gpu_id)
     print(f"[GPU {gpu_id}] seeds={seed_list} | loading model...", flush=True)
 
-    llm = LLM(model=NAME, enforce_eager=True)
+    llm = LLM(model=MODEL, enforce_eager=True)
     results = []
 
     for seed in seed_list:
@@ -109,7 +120,8 @@ def worker_process(args_tuple):
 #                                   main                                      #
 # --------------------------------------------------------------------------- #
 def main():
-    available_workers = [0,1,2,3,4,5,6,7]
+    # 物理卡号列表, 必须显式给 —— worker 内部会用它覆盖 CUDA_VISIBLE_DEVICES
+    available_workers = [int(x) for x in require_env("EVAL_GEN_GPUS").split(",")]
     num_workers = len(available_workers)
     for task in TASKS:
         task_name = task["name"]

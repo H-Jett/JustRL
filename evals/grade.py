@@ -7,6 +7,17 @@ from pathlib import Path
 import re
 from vllm import LLM, SamplingParams
 
+
+def require_env(key: str) -> str:
+    """读取必填环境变量。刻意不设默认值 —— 全部配置由 evals/run.sh 提供。"""
+    value = os.environ.get(key)
+    if not value:
+        raise RuntimeError(
+            f"缺少必填环境变量 {key}; 请通过 evals/run.sh 运行, 或手动 export {key}=..."
+        )
+    return value
+
+
 CV_PROMPT = """
 Please as a grading expert, judge whether the final answers given by the candidates below are consistent with the standard answers, that is, whether the candidates answered correctly. 
 Here are some evaluation criteria:
@@ -33,14 +44,20 @@ Here is your task. Simply reply with either CORRECT, INCORRECT, or INVALID. Don'
 Judging the correctness of the candidate's answer:
 """
 
-NAME     = "JustRL-Nemotron-1.5B" # "JustRL-Nemotron-1.5B"
-EVAL_DIR = Path(f"justrl_eval_outputs/{NAME}")
+# 读/写的评测目录: 与 gen_vllm.py 的 EVAL_OUT_DIR 是同一个值,
+# 从而不依赖"模型名 -> 目录名"的推导, 避免两边不一致导致判错目录。
+EVAL_DIR = Path(require_env("EVAL_OUT_DIR"))
 OUTPUT_FILE = EVAL_DIR / "grading_results.json"
 
-model_name = "opencompass/CompassVerifier-3B"
-model_tokenizer = AutoTokenizer.from_pretrained(model_name)
+VERIFIER_MODEL = require_env("EVAL_VERIFIER_MODEL")
+
+# 判分模型在 import 时(下方 LLM(...))就会加载到 GPU 上, 所以必须在构造它之前
+# 用 CUDA_VISIBLE_DEVICES 钉住单张卡; 否则它会无条件占用物理卡 0。
+os.environ["CUDA_VISIBLE_DEVICES"] = require_env("EVAL_GRADE_GPU")
+
+model_tokenizer = AutoTokenizer.from_pretrained(VERIFIER_MODEL)
 vllm_model = LLM(
-    model=model_name,
+    model=VERIFIER_MODEL,
     tensor_parallel_size=1
 )
 sampling_params = SamplingParams(
