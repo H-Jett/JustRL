@@ -57,14 +57,45 @@ VERIFIER_MODEL = require_env("EVAL_VERIFIER_MODEL")
 os.environ["CUDA_VISIBLE_DEVICES"] = require_env("EVAL_GRADE_GPU")
 
 model_tokenizer = AutoTokenizer.from_pretrained(VERIFIER_MODEL)
+
+# CompassVerifier-3B 的 max_position_embeddings=32768 且 rope_scaling=None, 32768 是硬上限,
+# 调大 max_model_len 也没用; 而生成端 MAX_TOKENS=31744, 题目+标准答案再占一点, 一条写满上限的
+# response 就会把判分 prompt 顶出窗口 —— vLLM 对超长输入直接 raise, 整个判分崩掉。
+VERIFIER_MAX_LEN = 32768
+PROMPT_RESERVED = 512  # 留给 chat template 的余量
+
 vllm_model = LLM(
     model=VERIFIER_MODEL,
-    tensor_parallel_size=1
+    tensor_parallel_size=1,
+    max_model_len=VERIFIER_MAX_LEN,
 )
 sampling_params = SamplingParams(
     temperature=0.0,
     max_tokens=2048
 )
+
+# CV_PROMPT 固定部分的 token 数(占位符填空串即得)
+_CV_FIXED_TOKENS = len(model_tokenizer.encode(
+    CV_PROMPT.format(question="", gold_answer="", llm_response="")))
+
+
+def fit_for_verifier(response, question, gt):
+    """超长时把 response 截到判分窗口内, 否则原样返回。
+
+    保留头+尾: 头是模型复述的题目, 尾是它的结论。截断只为不崩, 判分提示词规则 6
+    (回答不完整 -> INVALID)本就覆盖这类样本。返回 (文本, 是否截断)。
+    """
+    budget = max(1, VERIFIER_MAX_LEN - PROMPT_RESERVED - _CV_FIXED_TOKENS
+                 - len(model_tokenizer.encode(question or ""))
+                 - len(model_tokenizer.encode(str(gt))))
+    ids = model_tokenizer.encode(response)
+    if len(ids) <= budget:
+        return response, False
+    head = budget // 2
+    return (model_tokenizer.decode(ids[:head])
+            + "\n\n...[中间省略: 回答过长, 已截断]...\n\n"
+            + model_tokenizer.decode(ids[len(ids) - (budget - head):]), True)
+
 
 length_tokenizer = None
 
@@ -150,6 +181,7 @@ def grade_file(file_path):
         "solve_all": 0,
         "avg_output_length": 0,
         "format_error_rollouts": 0,
+        "truncated_for_verifier": 0,
     }
 
     diverse = []
@@ -158,6 +190,7 @@ def grade_file(file_path):
     solve_none = 0
     solve_all = 0
     without_boxed = 0
+    truncated_for_verifier = 0  # 有多少条 response 因为太长被判分前截断
     response_lengths = []
     incorrect_data = []  # List to store incorrect responses and ground truths
 
@@ -190,13 +223,17 @@ def grade_file(file_path):
             rule_score = grade_answer_verl(response, gt)
             rule_based_scores.append(rule_score)
             if not rule_score:  # If rule-based verifier fails, prepare for model-based verifier
+                # 送进判分模型前先适配窗口, 否则超长样本会让 vLLM 直接 raise
+                resp_for_verifier, was_truncated = fit_for_verifier(response, question, gt)
+                if was_truncated:
+                    truncated_for_verifier += 1
                 model_input = CV_PROMPT.format(
                     question=question,
                     gold_answer=gt,
-                    llm_response=response
+                    llm_response=resp_for_verifier
                 )
                 all_model_inputs.append(model_input)
-                all_responses.append(response)
+                all_responses.append(response)  # 留存原始 response, 报告里记录的是它
                 all_questions.append(question)
                 all_ground_truths.append(gt)
 
@@ -251,6 +288,7 @@ def grade_file(file_path):
     results["solve_all"] = solve_all
     results["avg_output_length"] = sum(response_lengths) / len(response_lengths)
     results["format_error_rollouts"] = without_boxed
+    results["truncated_for_verifier"] = truncated_for_verifier
 
     # Save incorrect responses and ground truths to a separate file
     # incorrect_file = EVAL_DIR / f"{file_path.stem}_incorrect_data.json"
@@ -261,15 +299,15 @@ def grade_file(file_path):
 
 def main():
     all_results = []
-    for file_path in EVAL_DIR.glob("*.jsonl"):
-        print(f"Processing file: {file_path}")
+    for file_path in sorted(EVAL_DIR.glob("*.jsonl")):
+        print(f"Processing file: {file_path}", flush=True)
         file_result = grade_file(file_path)
         if file_result:
             all_results.append(file_result)
+            # 每个任务跑完立刻落盘, 中途中断也只会丢当前这一个, 不会像原来那样全丢
+            with OUTPUT_FILE.open("w", encoding="utf-8") as f:
+                json.dump(all_results, f, indent=4)
 
-    # Save results to JSON
-    with OUTPUT_FILE.open("w", encoding="utf-8") as f:
-        json.dump(all_results, f, indent=4)
     print(f"Grading results saved to {OUTPUT_FILE}")
 
 if __name__ == "__main__":
