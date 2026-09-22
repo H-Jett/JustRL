@@ -123,6 +123,10 @@ ENV/
 # data
 *.parquet
 
+# 训练数据集 DAPO-Math-17k: 从 HF 下载的 ~300MB 数据及其缓存, 不入库
+# (parquet 本身已被上面的 *.parquet 忽略, 这里连同 README/.cache 一起挡掉)
+train/data/DAPO/
+
 
 # local logs
 logs
