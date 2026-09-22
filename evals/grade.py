@@ -102,10 +102,14 @@ def process_jsonl_file(file_name):
             data = json.loads(line)
             id = int(data["example_id"])
             while len(results) <= id:  # Ensure the list is large enough
-                results.append({"gt": None, "responses": []})
+                results.append({"gt": None, "question": None, "responses": []})
             gt = data["answer"]
             response = data["response"]
             results[id]["gt"] = gt
+            # gen_vllm.py 落盘的字段名是 prompt, 下游(grade_file)读的是 question,
+            # 这行是两边唯一的翻译层; 少了它 question 恒为空串, 送进 CompassVerifier
+            # 的 prompt 就只剩标准答案、没有题干, 判分模型无法按规则 3 理解题目。
+            results[id]["question"] = data["prompt"]
             results[id]["responses"].append(response)
     return results
 
