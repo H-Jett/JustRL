@@ -48,15 +48,20 @@ Judging the correctness of the candidate's answer:
 # 读/写的评测目录: 与 gen_vllm.py 的 EVAL_OUT_DIR 是同一个值,
 # 从而不依赖"模型名 -> 目录名"的推导, 避免两边不一致导致判错目录。
 EVAL_DIR = Path(require_env("EVAL_OUT_DIR"))
-OUTPUT_FILE = EVAL_DIR / "grading_results.json"
 
 VERIFIER_MODEL = require_env("EVAL_VERIFIER_MODEL")
 
-# 判分模型在 import 时(下方 LLM(...))就会加载到 GPU 上, 所以必须在构造它之前
-# 用 CUDA_VISIBLE_DEVICES 钉住单张卡; 否则它会无条件占用物理卡 0。
-os.environ["CUDA_VISIBLE_DEVICES"] = require_env("EVAL_GRADE_GPU")
+# 判分口径开关, 默认 0/0 = 论文基线行的口径(纯规则 + 空题干)。
+# USE_VERIFIER: 规则判失败后是否再送 CompassVerifier 兜底判分(开=抬分约 4 分)
+# USE_QUESTION: 是否把题干传给判分模型(0=空题干, 仓库原始行为)
+USE_VERIFIER = require_env("EVAL_VERIFIER_ENABLE") == "1"
+USE_QUESTION = require_env("EVAL_VERIFIER_USE_QUESTION") == "1"
 
-model_tokenizer = AutoTokenizer.from_pretrained(VERIFIER_MODEL)
+# 文件名带上口径({cv|rule} × {q|noq}), 四种配置各写各的, 不会互相覆盖。
+OUTPUT_FILE = EVAL_DIR / (
+    f"grading_results.{'cv' if USE_VERIFIER else 'rule'}"
+    f".{'q' if USE_QUESTION else 'noq'}.json"
+)
 
 # CompassVerifier-3B 的 max_position_embeddings=32768 且 rope_scaling=None, 32768 是硬上限,
 # 调大 max_model_len 也没用; 而生成端 MAX_TOKENS=31744, 题目+标准答案再占一点, 一条写满上限的
@@ -64,19 +69,27 @@ model_tokenizer = AutoTokenizer.from_pretrained(VERIFIER_MODEL)
 VERIFIER_MAX_LEN = 32768
 PROMPT_RESERVED = 512  # 留给 chat template 的余量
 
-vllm_model = LLM(
-    model=VERIFIER_MODEL,
-    tensor_parallel_size=1,
-    max_model_len=VERIFIER_MAX_LEN,
-)
-sampling_params = SamplingParams(
-    temperature=0.0,
-    max_tokens=2048
-)
+# 纯规则模式下不构造判分模型, 也就完全不占 GPU、不需要 EVAL_GRADE_GPU 那张卡
+if USE_VERIFIER:
+    # 判分模型在 import 时(下方 LLM(...))就会加载到 GPU 上, 所以必须在构造它之前
+    # 用 CUDA_VISIBLE_DEVICES 钉住单张卡; 否则它会无条件占用物理卡 0。
+    os.environ["CUDA_VISIBLE_DEVICES"] = require_env("EVAL_GRADE_GPU")
 
-# CV_PROMPT 固定部分的 token 数(占位符填空串即得)
-_CV_FIXED_TOKENS = len(model_tokenizer.encode(
-    CV_PROMPT.format(question="", gold_answer="", llm_response="")))
+    model_tokenizer = AutoTokenizer.from_pretrained(VERIFIER_MODEL)
+
+    vllm_model = LLM(
+        model=VERIFIER_MODEL,
+        tensor_parallel_size=1,
+        max_model_len=VERIFIER_MAX_LEN,
+    )
+    sampling_params = SamplingParams(
+        temperature=0.0,
+        max_tokens=2048
+    )
+
+    # CV_PROMPT 固定部分的 token 数(占位符填空串即得)
+    _CV_FIXED_TOKENS = len(model_tokenizer.encode(
+        CV_PROMPT.format(question="", gold_answer="", llm_response="")))
 
 
 def fit_for_verifier(response, question, gt):
@@ -140,7 +153,7 @@ def process_jsonl_file(file_name):
             # gen_vllm.py 落盘的字段名是 prompt, 下游(grade_file)读的是 question,
             # 这行是两边唯一的翻译层; 少了它 question 恒为空串, 送进 CompassVerifier
             # 的 prompt 就只剩标准答案、没有题干, 判分模型无法按规则 3 理解题目。
-            results[id]["question"] = data["prompt"]
+            results[id]["question"] = data["prompt"] if USE_QUESTION else ""
             results[id]["responses"].append(response)
     return results
 
@@ -222,7 +235,7 @@ def grade_file(file_path):
         for response in responses_list:
             rule_score = grade_answer_verl(response, gt)
             rule_based_scores.append(rule_score)
-            if not rule_score:  # If rule-based verifier fails, prepare for model-based verifier
+            if USE_VERIFIER and not rule_score:  # If rule-based verifier fails, prepare for model-based verifier
                 # 送进判分模型前先适配窗口, 否则超长样本会让 vLLM 直接 raise
                 resp_for_verifier, was_truncated = fit_for_verifier(response, question, gt)
                 if was_truncated:

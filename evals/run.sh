@@ -22,6 +22,9 @@ export EVAL_GRADE_GPU="${EVAL_GRADE_GPU:-0}"       # 判分模型用, 单卡
 export EVAL_DATA_DIR="${EVAL_DATA_DIR:-$REPO_ROOT/data}"
 export EVAL_OUT_DIR="${EVAL_OUT_DIR:-$REPO_ROOT/outputs/justrl_eval_outputs/$(basename "$EVAL_MODEL")}"
 export EVAL_VERIFIER_MODEL="${EVAL_VERIFIER_MODEL:-/volume/data/hjiang02/open_source/models/CompassVerifier-3B}"
+# 判分口径: 默认 0/0 = 论文基线行的口径(纯规则 + 空题干); 详见 grade.py 同名开关
+export EVAL_VERIFIER_ENABLE="${EVAL_VERIFIER_ENABLE:-0}"
+export EVAL_VERIFIER_USE_QUESTION="${EVAL_VERIFIER_USE_QUESTION:-0}"
 
 export PYTHONPATH="$REPO_ROOT/evals"
 export TOKENIZERS_PARALLELISM=true
@@ -41,6 +44,7 @@ cd "$REPO_ROOT" || exit 1
     echo "EVAL_DATA_DIR       = $EVAL_DATA_DIR"
     echo "EVAL_OUT_DIR        = $EVAL_OUT_DIR"
     echo "EVAL_VERIFIER_MODEL = $EVAL_VERIFIER_MODEL"
+    echo "判分口径            = VERIFIER_ENABLE:$EVAL_VERIFIER_ENABLE USE_QUESTION:$EVAL_VERIFIER_USE_QUESTION"
     echo "=============================================="
 
     echo "--- [1/2] gen_vllm.py 开始 ---"
