@@ -312,7 +312,10 @@ def grade_file(file_path):
 
 def main():
     all_results = []
-    for file_path in sorted(EVAL_DIR.glob("*.jsonl")):
+    # 先打印发现的文件数: 生成阶段要是中途挂了, 这里一眼就能看出只判了残缺的几个任务
+    file_paths = sorted(EVAL_DIR.glob("*.jsonl"))
+    print(f"发现 {len(file_paths)} 个生成结果文件: {[p.name for p in file_paths]}", flush=True)
+    for file_path in file_paths:
         print(f"Processing file: {file_path}", flush=True)
         file_result = grade_file(file_path)
         if file_result:

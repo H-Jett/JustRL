@@ -1,6 +1,8 @@
 import os
+import sys
 import json
 import random
+import traceback
 import concurrent.futures
 from pathlib import Path
 
@@ -39,6 +41,9 @@ MODEL       = require_env("EVAL_MODEL")
 MAX_TOKENS  = 31744
 TEMPERATURE = 0.7
 TOP_P       = 0.9
+# 每个 GPU worker 独占一段 vLLM 端口(worker 之间互不重叠), 说明见 worker_process()
+PORT_BASE   = int(require_env("EVAL_PORT_BASE"))
+PORT_STRIDE = 100
 OUT_DIR     = Path(require_env("EVAL_OUT_DIR"))
 OUT_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -78,6 +83,13 @@ def split_seeds(seeds: list[int], num_workers: int):
     return chunks
 
 
+def save_jsonl(path: Path, items: list):
+    """把生成结果按 jsonl 落盘(沿用原来的写出格式)。"""
+    with path.open("w", encoding="utf-8") as f:
+        for item in items:
+            f.write(json.dumps(item, ensure_ascii=False) + "\n")
+
+
 # --------------------------------------------------------------------------- #
 #                           Worker process (one GPU)                          #
 # --------------------------------------------------------------------------- #
@@ -85,11 +97,15 @@ def worker_process(args_tuple):
     """
     Each worker runs on a single GPU:
 
-    args_tuple = (samples, seed_list, gpu_id)
+    args_tuple = (samples, seed_list, gpu_id, port_base)
     """
-    samples, seed_list, gpu_id = args_tuple
+    samples, seed_list, gpu_id, port_base = args_tuple
     os.environ["CUDA_VISIBLE_DEVICES"] = str(gpu_id)
-    print(f"[GPU {gpu_id}] seeds={seed_list} | loading model...", flush=True)
+    # vLLM 初始化时自己找空闲端口搭 rendezvous(_get_open_port 是 bind -> getsockname -> close,
+    # 端口并没有被占住), 8 个 worker 同时找就可能挑到同一个 -> EADDRINUSE 整轮崩掉。
+    # VLLM_PORT 是 vLLM 官方留的口子(设了就从这个端口开始往后找), 每张卡给一段独占区间即可。
+    os.environ["VLLM_PORT"] = str(port_base)
+    print(f"[GPU {gpu_id}] seeds={seed_list} | loading model (port base {port_base})...", flush=True)
 
     llm = LLM(model=MODEL, enforce_eager=True)
     results = []
@@ -128,42 +144,49 @@ def main():
         task_path = task["path"]
         N = task["N"]
 
-        print(f"Starting evaluation for task: {task_name} (N={N})")
-
         # Update output path for the current task
         out_path = OUT_DIR / f"{task_name.lower()}_t{TEMPERATURE}_p{TOP_P}_n{N}-MNT{MAX_TOKENS}.jsonl"
 
-        # 1. Load original prompts
-        samples = load_samples(task_path)
+        # 任一任务失败就立刻中断(非 0 退出), 由调用方整轮重跑 —— 不跳过、不留半套结果
+        try:
+            print(f"Starting evaluation for task: {task_name} (N={N})")
 
-        # Append suffix prompt to each sample
-        for sample in samples:
-            sample["prompt"] = PROMPT_TEMPLATE.format(problem=sample["prompt"])
+            # 1. Load original prompts
+            samples = load_samples(task_path)
 
-        # demo print
-        print("Example prompt after formatting:")
-        print(samples[0]["prompt"])
-        
-        # 2. Generate N distinct random seeds and split across GPUs
-        random_seeds = random.sample(range(2**31 - 1), N)  # unique & shuffled
-        seed_chunks = split_seeds(random_seeds, num_workers)
+            # Append suffix prompt to each sample
+            for sample in samples:
+                sample["prompt"] = PROMPT_TEMPLATE.format(problem=sample["prompt"])
 
-        # 3. Launch workers
-        all_results = []
-        args_list = [(samples, seed_chunks[i], gid) for (i, gid) in enumerate(available_workers)]
-        with concurrent.futures.ProcessPoolExecutor(max_workers=num_workers) as ex:
-            futures = [ex.submit(worker_process, tup) for tup in args_list]
-            for fut in tqdm(concurrent.futures.as_completed(futures),
-                            total=len(futures), desc=f"GPU workers ({task_name})"):
-                all_results.extend(fut.result())
+            # demo print
+            print("Example prompt after formatting:")
+            print(samples[0]["prompt"])
 
-        print(f"Total generations collected for {task_name}: {len(all_results)}")  # len(samples) * N
+            # 2. Generate N distinct random seeds and split across GPUs
+            random_seeds = random.sample(range(2**31 - 1), N)  # unique & shuffled
+            seed_chunks = split_seeds(random_seeds, num_workers)
 
-        # 4. Save to disk
-        with out_path.open("w", encoding="utf-8") as f:
-            for item in all_results:
-                f.write(json.dumps(item, ensure_ascii=False) + "\n")
-        print(f"Saved results for {task_name} to {out_path}")
+            # 3. Launch workers; 每张卡一段独占端口, 避免并发抢端口
+            all_results = []
+            args_list = [
+                (samples, seed_chunks[i], gid, PORT_BASE + i * PORT_STRIDE)
+                for (i, gid) in enumerate(available_workers)
+            ]
+            with concurrent.futures.ProcessPoolExecutor(max_workers=num_workers) as ex:
+                futures = [ex.submit(worker_process, tup) for tup in args_list]
+                for fut in tqdm(concurrent.futures.as_completed(futures),
+                                total=len(futures), desc=f"GPU workers ({task_name})"):
+                    all_results.extend(fut.result())
+
+            print(f"Total generations collected for {task_name}: {len(all_results)}")  # len(samples) * N
+
+            # 4. Save to disk
+            save_jsonl(out_path, all_results)
+            print(f"Saved results for {task_name} to {out_path}")
+        except Exception:
+            print(f"[FAIL] {task_name} 生成失败, 中断本轮(整轮重跑):\n{traceback.format_exc()}",
+                  flush=True)
+            sys.exit(1)
 
 
 if __name__ == "__main__":

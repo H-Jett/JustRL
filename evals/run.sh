@@ -22,6 +22,8 @@ export EVAL_GRADE_GPU="${EVAL_GRADE_GPU:-0}"       # 判分模型用, 单卡
 export EVAL_DATA_DIR="${EVAL_DATA_DIR:-$REPO_ROOT/data}"
 export EVAL_OUT_DIR="${EVAL_OUT_DIR:-$REPO_ROOT/outputs/justrl_eval_outputs/$(basename "$EVAL_MODEL")}"
 export EVAL_VERIFIER_MODEL="${EVAL_VERIFIER_MODEL:-/volume/data/hjiang02/open_source/models/CompassVerifier-3B}"
+# 每张卡一段独占端口(每个 worker 100 个), 同时跑多份评测时把其中一份的基址错开即可
+export EVAL_PORT_BASE="${EVAL_PORT_BASE:-20000}"
 # 判分口径: 默认 0/0 = 论文基线行的口径(纯规则 + 空题干); 详见 grade.py 同名开关
 export EVAL_VERIFIER_ENABLE="${EVAL_VERIFIER_ENABLE:-0}"
 export EVAL_VERIFIER_USE_QUESTION="${EVAL_VERIFIER_USE_QUESTION:-0}"
@@ -49,7 +51,13 @@ cd "$REPO_ROOT" || exit 1
 
     echo "--- [1/2] gen_vllm.py 开始 ---"
     python3 -u evals/gen_vllm.py
-    echo "--- [1/2] gen_vllm.py 结束 rc=$? ---"
+    gen_rc=$?
+    echo "--- [1/2] gen_vllm.py 结束 rc=$gen_rc ---"
+    # 生成失败/有任务没跑完就不要接着判分, 否则会拿残缺结果打出一个"完成"的假象
+    if [ "$gen_rc" -ne 0 ]; then
+        echo "!!! gen_vllm.py 失败(rc=$gen_rc), 跳过判分. 日志: $LOG"
+        exit "$gen_rc"
+    fi
 
     echo "--- [2/2] grade.py 开始 ---"
     python3 -u evals/grade.py
