@@ -71,6 +71,10 @@ JustRL/
     └── JustRL-Nemotron-1.5B/
         ├── *.jsonl
         └── grading_results.json
+
+> Note: the released results above are the authors' original `grading_results.json`.
+> Re-running `evals/grade.py` writes `grading_results.{cv|rule}.{q|noq}.json` instead
+> (the name encodes the grading protocol), so the released files are not overwritten.
 ```
 
 ## 🔧 Setup
@@ -120,7 +124,7 @@ cd evals
 python grade.py
 ```
 
-The grading script processes all JSONL files in the output directory and generates `grading_results.json`.
+The grading script processes all JSONL files in the output directory and generates `grading_results.{cv|rule}.{q|noq}.json`, where `cv`/`rule` selects the CompassVerifier fallback and `q`/`noq` selects whether the question is passed to the judge (see `EVAL_VERIFIER_ENABLE` / `EVAL_VERIFIER_USE_QUESTION` in `evals/run.sh`).
 
 ## 📈 Performance
 

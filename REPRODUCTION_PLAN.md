@@ -115,7 +115,8 @@ PYTHONPATH=evals python evals/gen_vllm.py    # 生成
 PYTHONPATH=evals python evals/grade.py       # 判分
 ```
 
-**产出**：`justrl_eval_outputs/JustRL-DeepSeek-1.5B/grading_results.json`
+**产出**：`justrl_eval_outputs/JustRL-DeepSeek-1.5B/grading_results.{cv|rule}.{q|noq}.json`
+（文件名随判分口径变化：`cv`/`rule` = 是否启用 CompassVerifier 兜底，`q`/`noq` = 是否把题干传给判分模型；论文基线口径是 `rule.noq`）
 
 **判据（对齐目标）**：
 
