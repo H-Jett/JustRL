@@ -1,5 +1,10 @@
 #!/bin/bash
 
+# ⚠️ 警告:这是原作者集群(g48/g49/g86/g87,账号 test06,靠 ssh 驱动)的一次性 launcher,
+#    文件路径与 conda 环境名均已写死,在当前环境不可用。
+#    【不要运行它】—— 它会用 cat > 覆盖掉 train/run_training.sh 与 train/start_ray_worker.sh,
+#    把适配后的训练脚本冲掉。当前多机启动请直接用 train/run_training.sh(自带 head/worker 分支)。
+
 # 4-node Ray cluster setup for nodes g48, g49, g86, g87
 # All nodes are on account test06 with shared filesystem
 
