@@ -16,7 +16,7 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # ---------------------------------------------------------------------------
 # 配置: 两个 python 脚本只读环境变量、不自带默认值, 默认值统一放这里
 # ---------------------------------------------------------------------------
-export EVAL_MODEL="${EVAL_MODEL:-/volume/data/hjiang02/open_source/models/DeepSeek-R1-Distill-Qwen-1.5B}"
+export EVAL_MODEL="${EVAL_MODEL:-/volume/data/hjiang02/open_source/models/OpenMath-Nemotron-1.5B}"
 export EVAL_GEN_GPUS="${EVAL_GEN_GPUS:-0,1,2,3,4,5,6,7}"   # 生成用, 物理卡号
 export EVAL_GRADE_GPU="${EVAL_GRADE_GPU:-0}"       # 判分模型用, 单卡
 export EVAL_DATA_DIR="${EVAL_DATA_DIR:-$REPO_ROOT/data}"
